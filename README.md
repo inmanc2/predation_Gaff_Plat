@@ -1,2 +1,9 @@
 # predation_Gaff_Plat
-Repository for R code and dataframe associated with predation, behavior, and cognition in sympatric fishes. This contains the primary dataframe for the study, as well as code for all essential analyses. The analysis includes: 1. Principal Component Analysis on Scototaxis Traits, 2. MANCOVA on all behavioral and cognitive traits, 3. Linear Discriminant Analysis on Behavior and Cognition by Predation Regime/Species combinations, 4. LMMs on each behavioral or cognitive trait with separate interaction terms for predation regime and watershed and predation regime and species, 5. Estimated marginal means for this set of LMMs, and 6. LMMs with a three-way interaction term including predation regime, watershed, and species, along with estimated marginal means (purely for visualization purposes, of species effects by location)
+Repository for R code and dataframe associated with predation, behavior, and cognition in sympatric fishes. This contains the primary dataframe for the study, as well as code for all essential analyses. 
+The analyses include in the code are: 
+1. Principal Component Analysis on Scototaxis Traits,
+2. MANCOVA on all behavioral and cognitive traits,
+3. Linear Discriminant Analysis on Behavior and Cognition by Predation Regime/Species combinations,
+4. LMMs on each behavioral or cognitive trait with separate interaction terms for predation regime and watershed and predation regime and species,
+5. Estimated marginal means for this set of LMMs, and
+6. LMMs with a three-way interaction term including predation regime, watershed, and species, along with estimated marginal means (purely for visualization purposes, of species effects by location)
