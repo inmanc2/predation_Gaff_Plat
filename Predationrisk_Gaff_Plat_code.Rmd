@@ -1,0 +1,305 @@
+---
+title: "Predation_behav_cogcode_for_submission"
+output: html_document
+date: "2026-05-05"
+---
+
+
+load dataframe
+```{r}
+library(RCurl)
+x <- getURL("https://raw.githubusercontent.com/inmanc2/predation_Gaff_Plat/refs/heads/main/Predation_dataset_foranalysis.csv")
+Predation_data <- read.csv(text = x)
+
+```
+
+PCA on scototaxis traits
+```{r}
+
+library(dplyr)
+library(ggplot2)
+
+# transform relevant variables and omit NAs
+
+df_pca <- Combined_SL_filtered_final %>%
+  transmute(
+    Predation_Regime,
+    Standard_length,
+    Sex,
+    Population,
+    Species,
+    Waterway,
+    Shyness = log(TimeinBlackThigmo + 0.01),
+    Boldness = log(TimeinWhite + 0.01),
+    Exploration = log(Distance_moved)
+  ) %>%
+  na.omit()
+
+```
+
+```{r}
+
+# perform PCA and select relevant transformed variables
+
+pca_mod <- prcomp(
+  df_pca %>% select(Shyness, Boldness, Exploration),
+  scale. = TRUE
+)
+
+# generate PC scores
+
+scores <- as.data.frame(pca_mod$x) %>%
+  bind_cols(df_pca %>% select(Predation_Regime, Species, Sex, Population, Standard_length, Waterway))
+
+# generate PC loadings
+
+loadings <- as.data.frame(pca_mod$rotation)
+loadings$Trait <- rownames(loadings)
+
+# multiply loadings by scale factor to ease interpretation
+
+scale_factor <- 3
+loadings <- loadings %>%
+  mutate(
+    PC1 = PC1 * scale_factor,
+    PC2 = PC2 * scale_factor
+  )
+
+```
+
+MANOVA on all behavioral and cognitive traits in dataset
+```{r}
+library(car)
+
+fit <- manova(
+ cbind(log(Detour_solve_time_imputed), log(Detour_socialmotivation), log(TimeinBlackThigmo+0.01), log(TimeinWhite+0.01), log(Distance_moved)) ~ Standard_length + Sex + Species*Predation_Regime + Waterway + Species + Predation_Regime + Waterway*Predation_Regime,
+ data = Combined_SL_filtered_final
+)
+
+#type 3 ANOVA on MANOVA fit
+
+Anova(fit, test = "Wilks", type = 3)
+
+eta_squared(fit, partial = TRUE)
+
+```
+
+LDA on all traits
+
+```{r}
+
+library(MASS)
+
+#group based species and predation
+Combined_SL_filtered_final$Group1 <- interaction(
+  Combined_SL_filtered_final$Species,
+  Combined_SL_filtered_final$Predation_Regime,
+  sep = "_",
+  drop = TRUE
+)
+
+traits <- c("Detour_solve_time_imputed",
+            "Detour_socialmotivation",
+            "TimeinBlackThigmo",
+            "TimeinWhite",
+            "Distance_moved")
+
+```
+
+
+```{r}
+
+
+df_lda_all <- Combined_SL_filtered_final %>%
+  dplyr::select(Group1, all_of(traits), Standard_length,
+                Waterway, Predation_Regime, Species, Sex, Population) %>%
+  na.omit() %>%
+  mutate(Group1 = as.factor(Group1))
+
+# add standard length as a covariate and make an object for predictor variables
+
+predictor_vars <- c(traits, "Standard_length")
+
+lda_formula <- as.formula(
+  paste("Group1 ~", paste(predictor_vars, collapse = " + "))
+)
+
+lda_model_all <- lda(lda_formula, data = df_lda_all)
+
+lda_pred_all <- predict(lda_model_all)
+
+df_lda_all <- df_lda_all %>%
+  mutate(
+    LD1 = lda_pred_all$x[, 1],
+    LD2 = if (ncol(lda_pred_all$x) >= 2) lda_pred_all$x[, 2] else NA
+  )
+
+
+```
+ANOVA on LDs
+```{r}
+anova_ld1 <- aov(LD1 ~ Group1, data = df_lda_all)
+summary(anova_ld1)
+
+TukeyHSD(anova_ld1)
+
+anova_ld2 <- aov(LD2 ~ Group1, data = df_lda_all)
+summary(anova_ld2)
+
+TukeyHSD(anova_ld2)
+
+
+```
+
+Set of LMMs #1: Trait ~ Predation * Watershed + Predation * Species + Predation * Standard Length + Sex + (1 | Population)
+
+```{r}
+
+library(purrr)
+library(ggplot2)
+library(lmerTest)
+library(emmeans)
+library(dplyr)
+
+
+# Prepare data
+
+dat <- Combined_SL_filtered_final %>%
+  mutate(
+    Species = factor(Species, levels = c("G. affinis", "P. latipinna")),
+    Predation_Regime = factor(Predation_Regime, levels = c("LP", "HP")),
+    Waterway = factor(Waterway),
+    
+    Standard_length_c = Standard_length - mean(Standard_length, na.rm = TRUE),
+
+    TimeinBlackThigmo_log = log(TimeinBlackThigmo + 0.01),
+    TimeinWhite_log = log(TimeinWhite + 0.01),
+    Distance_moved_log = log(Distance_moved+0.01),
+    Detour_solve_time_imputed_log = log(Detour_solve_time_imputed+0.01),
+    Detour_socialmotivation_log = log(Detour_socialmotivation+0.01)
+  )
+
+# Trait definitions
+
+trait_vars <- c(
+  "TimeinBlackThigmo_log",
+  "TimeinWhite_log",
+  "Distance_moved_log",
+  "Detour_socialmotivation_log",
+  "Detour_solve_time_imputed_log"
+)
+
+trait_labels <- c(
+  "TimeinBlackThigmo_log"         = "Shyness",
+  "TimeinWhite_log"               = "Boldness",
+  "Distance_moved_log"            = "Exploration",
+  "Detour_socialmotivation_log"   = "Social motivation",
+  "Detour_solve_time_imputed_log" = "Cognitive flexibility"
+)
+
+
+# Fit one model per trait
+
+model_list <- setNames(vector("list", length(trait_vars)), trait_vars)
+
+for (trait in trait_vars) {
+  form <- as.formula(
+    paste0(
+      trait,
+      " ~ Waterway * Predation_Regime + ",
+      "Species * Predation_Regime + ",
+      "Standard_length_c * Predation_Regime+",
+      "Sex +",
+      "(1 | Population)"
+    )
+  )
+
+  model_list[[trait]] <- lmer(form, data = dat, REML = FALSE)
+}
+
+
+
+```
+Generate ANOVA table of effects from LMMs
+```{r}
+
+anova_results <- imap_dfr(model_list, function(model, trait) {
+  anova(model, type = 3) %>%
+    as.data.frame() %>%
+    rownames_to_column("Effect") %>%
+    mutate(Trait = trait) %>%
+    select(
+      Trait,
+      Effect,
+      NumDF = NumDF,
+      DenDF = DenDF,
+      F_value = `F value`,
+      p_value = `Pr(>F)`
+    )
+})
+ 
+anova_results_fdr <- anova_results %>%
+  group_by(Effect) %>%
+  mutate(p_FDR = p.adjust(p_value, method = "fdr")) %>%
+  ungroup()
+
+
+anova_results_fdr
+
+
+```
+Estimated marginal means for set of LMMs #1
+```{r}
+library(emmeans)
+
+mod <- model_list[["trait"]]
+
+emm_all <- emmeans(
+  mod,
+  ~ Predation_Regime | Waterway * Species
+)
+
+contrast_all <- contrast(emm_all, method = "pairwise")
+summary(contrast_all, infer = TRUE)
+
+```
+
+Set of LMMs #2 (for visualization only, Figures 3-4), includes 3-way interaction: Predation Regime * Watershed * Species
+```{r}
+
+model_list2 <- setNames(vector("list", length(trait_vars)), trait_vars)
+
+for (trait in trait_vars) {
+  form <- as.formula(
+    paste0(
+      trait,
+      " ~ Waterway * Species *Predation_Regime + ",
+      "Standard_length_c * Predation_Regime +",
+      "Sex +",
+      "(1 | Population)"
+    )
+  )
+
+  model_list2[[trait]] <- lmer(form, data = dat, REML = FALSE)
+}
+
+
+# Estimated marginal means for model set 2
+
+library(emmeans)
+
+mod2 <- model_list2[["trait"]]
+
+emm_all <- emmeans(
+  mod2,
+  ~ Species | Waterway * Predation_Regime
+)
+
+contrast_all <- contrast(emm_all, method = "pairwise")
+summary(contrast_all, infer = TRUE)
+
+```
+
+
+
+
