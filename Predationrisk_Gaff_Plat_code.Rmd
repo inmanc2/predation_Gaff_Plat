@@ -71,8 +71,10 @@ MANOVA on all behavioral and cognitive traits in dataset
 ```{r}
 library(car)
 
+library(effectsize)
+
 fit <- manova(
- cbind(log(Detour_solve_time_imputed), log(Detour_socialmotivation), log(TimeinBlackThigmo+0.01), log(TimeinWhite+0.01), log(Distance_moved)) ~ Standard_length + Sex + Species*Predation_Regime + Waterway + Species + Predation_Regime + Waterway*Predation_Regime,
+ cbind(log(Detour_solve_time_imputed), log(Detour_socialmotivation), log(TimeinBlackThigmo+0.01), log(TimeinWhite+0.01), log(Distance_moved)) ~ Standard_length*Predation_Regime + Sex*Species*Predation_Regime + Waterway + Species + Predation_Regime + Waterway*Predation_Regime,
  data = Combined_SL_filtered_final
 )
 
@@ -151,13 +153,12 @@ TukeyHSD(anova_ld2)
 
 ```
 
-Set of LMMs #1: Trait ~ Predation * Watershed + Predation * Species + Predation * Standard Length + Sex + (1 | Population)
+Set of LMs #1: Trait ~ Predation * Watershed + Predation * Species + Predation * Standard Length + Sex 
 
 ```{r}
 
 library(purrr)
 library(ggplot2)
-library(lmerTest)
 library(emmeans)
 library(dplyr)
 
@@ -198,73 +199,522 @@ trait_labels <- c(
 )
 
 
-# Fit one model per trait
 
-model_list <- setNames(vector("list", length(trait_vars)), trait_vars)
+library(car)
+library(dplyr)
+library(purrr)
+library(tibble)
 
-for (trait in trait_vars) {
-  form <- as.formula(
-    paste0(
-      trait,
-      " ~ Waterway * Predation_Regime + ",
-      "Species * Predation_Regime + ",
-      "Standard_length_c * Predation_Regime+",
-      "Sex +",
-      "(1 | Population)"
-    )
-  )
+final_lm_results <- imap_dfr(
+  model_list,
+  function(model, trait) {
 
-  model_list[[trait]] <- lmer(form, data = dat, REML = FALSE)
-}
+    a <- car::Anova(model, type = 3) %>%
+      as.data.frame() %>%
+      rownames_to_column("Effect")
 
+    a %>%
+      filter(!Effect %in% c("(Intercept)", "Residuals")) %>%
+      transmute(
+        Trait = trait,
+        Effect = Effect,
+        NumDF = Df,
+        DenDF = df.residual(model),
+        F_value = `F value`,
+        p_raw = `Pr(>F)`,
+        partial_eta2 =
+          (F_value * NumDF) /
+          (F_value * NumDF + DenDF)
+      )
+  }
+)
 
-
-```
-Generate ANOVA table of effects from LMMs
-```{r}
-
-anova_results <- imap_dfr(model_list, function(model, trait) {
-  anova(model, type = 3) %>%
-    as.data.frame() %>%
-    rownames_to_column("Effect") %>%
-    mutate(Trait = trait) %>%
-    select(
-      Trait,
-      Effect,
-      NumDF = NumDF,
-      DenDF = DenDF,
-      F_value = `F value`,
-      p_value = `Pr(>F)`
-    )
-})
- 
-anova_results_fdr <- anova_results %>%
+final_lm_results <- final_lm_results %>%
   group_by(Effect) %>%
-  mutate(p_FDR = p.adjust(p_value, method = "fdr")) %>%
+  mutate(
+    p_FDR = p.adjust(p_raw, method = "fdr")
+  ) %>%
   ungroup()
 
+final_lm_results %>%
+  print(n = Inf, width = Inf)
 
-anova_results_fdr
 
 
 ```
-Estimated marginal means for set of LMMs #1
+Updated emmeans contrasts across all focal LMs
 ```{r}
 library(emmeans)
 
-mod <- model_list[["trait"]]
-
-emm_all <- emmeans(
-  mod,
-  ~ Predation_Regime | Waterway * Species
+# Exploration
+emm_exploration <- emmeans(
+  model_list[["Distance_moved_log"]],
+  ~ Predation_Regime | Species
 )
 
-contrast_all <- contrast(emm_all, method = "pairwise")
-summary(contrast_all, infer = TRUE)
+pairs(emm_exploration, adjust = "none")
+
+
+# Boldness
+emm_boldness <- emmeans(
+  model_list[["TimeinWhite_log"]],
+  ~ Predation_Regime | Species
+)
+
+pairs(emm_boldness, adjust = "none")
+
+
+# Shyness
+emm_shyness <- emmeans(
+  model_list[["TimeinBlackThigmo_log"]],
+  ~ Predation_Regime | Species
+)
+
+pairs(emm_shyness, adjust = "none")
+
+library(emmeans)
+
+# Exploration: HP-LP contrasts
+# within each Species × Waterway
+
+exploration_waterway <- emmeans(
+  model_list[["Distance_moved_log"]],
+  ~ Predation_Regime | Species * Waterway
+)
+
+exploration_waterway
+
+pairs(
+  exploration_waterway,
+  adjust = "none"
+)
+
+
+# Boldness: HP-LP contrasts
+# within each Species × Waterway
+
+
+boldness_waterway <- emmeans(
+  model_list[["TimeinWhite_log"]],
+  ~ Predation_Regime | Species * Waterway
+)
+
+boldness_waterway
+
+pairs(
+  boldness_waterway,
+  adjust = "none"
+)
+
+
+library(emmeans)
+
+shyness_waterway <- emmeans(
+  model_list[["TimeinBlackThigmo_log"]],
+  ~ Predation_Regime | Species * Waterway
+)
+
+shyness_waterway
+
+pairs(
+  shyness_waterway,
+  adjust = "none"
+)
+
+
+# Estimated relationship between body size and shyness
+# separately for each predation regime
+shyness_size_trends <- emtrends(
+  model_list[["TimeinBlackThigmo_log"]],
+  ~ Predation_Regime,
+  var = "Standard_length_c"
+)
+
+shyness_size_trends
+
+# Test whether the size slopes differ between predation regimes
+pairs(shyness_size_trends)
+
+
+shyness_size_species_model <- lm(
+  TimeinBlackThigmo_log ~
+    Waterway * Predation_Regime +
+    Standard_length_c * Predation_Regime * Species +
+    Sex,
+  data = model.frame(model_list[["TimeinBlackThigmo_log"]])
+)
+
+car::Anova(
+  shyness_size_species_model,
+  type = 3
+)
+
+
+shyness_size_species_trends <- emtrends(
+  shyness_size_species_model,
+  ~ Predation_Regime | Species,
+  var = "Standard_length_c"
+)
+
+shyness_size_species_trends
+
+# LP vs HP difference in size slopes within each species
+pairs(shyness_size_species_trends)
+
+library(car)
+
+car::Anova(
+  shyness_size_species_model,
+  type = 3
+)
+
 
 ```
 
-Set of LMMs #2 (for visualization only, Figures 3-4), includes 3-way interaction: Predation Regime * Watershed * Species
+function for estimated marginal means tables
+```{r}
+
+trait_labels <- c(
+  Detour_socialmotivation_log = "Social latency",
+  Detour_solve_time_imputed_log = "Solve latency",
+  Distance_moved_log = "Exploration",
+  TimeinWhite_log = "Boldness",
+  TimeinBlackThigmo_log = "Shyness"
+)
+
+
+# Helper to extract each trait
+
+
+make_emm_table <- function(model, trait_name) {
+
+  # 1. Overall predation-regime contrast
+  overall <- emmeans(
+    model,
+    ~ Predation_Regime
+  ) |>
+    pairs(adjust = "none") |>
+    as.data.frame() |>
+    transmute(
+      Response = trait_name,
+      Explanatory_variable = "Predation regime",
+      Contrast = contrast,
+      Estimate = estimate,
+      t_ratio = t.ratio,
+      p_value = p.value
+    )
+
+  # 2. Predation-regime contrast within watershed
+  by_waterway <- emmeans(
+    model,
+    ~ Predation_Regime | Waterway
+  ) |>
+    pairs(adjust = "none") |>
+    as.data.frame() |>
+    transmute(
+      Response = trait_name,
+      Explanatory_variable = "Predation regime × Waterway",
+      Contrast = paste0(Waterway, ": ", contrast),
+      Estimate = estimate,
+      t_ratio = t.ratio,
+      p_value = p.value
+    )
+
+  # 3. Predation-regime contrast within species
+  by_species <- emmeans(
+    model,
+    ~ Predation_Regime | Species
+  ) |>
+    pairs(adjust = "none") |>
+    as.data.frame() |>
+    transmute(
+      Response = trait_name,
+      Explanatory_variable = "Predation regime × Species",
+      Contrast = paste0(Species, ": ", contrast),
+      Estimate = estimate,
+      t_ratio = t.ratio,
+      p_value = p.value
+    )
+
+  # 4. Difference in standard-length slopes between predation regimes
+  size_trends <- emtrends(
+    model,
+    ~ Predation_Regime,
+    var = "Standard_length_c"
+  ) |>
+    pairs(adjust = "none") |>
+    as.data.frame() |>
+    transmute(
+      Response = trait_name,
+      Explanatory_variable = "Predation regime × Standard length",
+      Contrast = "LP - HP (slope difference)",
+      Estimate = estimate,
+      t_ratio = t.ratio,
+      p_value = p.value
+    )
+
+  bind_rows(
+    overall,
+    by_waterway,
+    by_species,
+    size_trends
+  )
+}
+
+# Build full supplemental table
+
+supp_emm_table <- imap_dfr(
+  model_list,
+  ~ make_emm_table(
+    model = .x,
+    trait_name = unname(trait_labels[.y])
+  )
+)
+
+supp_emm_table
+```
+
+
+
+Primary and sensitivity model comparison for LM without Sex interaction and LM with sex interaction
+```{r}
+
+library(car)
+library(dplyr)
+library(tibble)
+
+focal_effects <- c(
+  "Predation_Regime",
+  "Waterway:Predation_Regime",
+  "Predation_Regime:Species",
+  "Predation_Regime:Standard_length_c"
+)
+
+trait_labels <- c(
+  TimeinBlackThigmo_log = "Black thigmotaxis",
+  TimeinWhite_log = "Time in white (boldness)",
+  Distance_moved_log = "Distance moved (exploration)",
+  Detour_socialmotivation_log = "Detour engagement latency",
+  Detour_solve_time_imputed_log = "Detour solve latency"
+)
+
+all_results <- list()
+
+for (trait in names(model_list)) {
+
+  model <- model_list[[trait]]
+
+  # Standardized residuals
+  std_resid <- rstandard(model)
+
+  # Keep observations with |standardized residual| <= 3
+  keep <- abs(std_resid) <= 3
+
+  # Exact model-frame data used by the primary model
+  mf <- model.frame(model)
+
+  # Refit sensitivity model
+  sensitivity_model <- lm(
+    formula(model),
+    data = mf[keep, ]
+  )
+
+  # Primary Type III table
+  primary <- car::Anova(model, type = 3) |>
+    as.data.frame() |>
+    rownames_to_column("Effect") |>
+    filter(Effect %in% focal_effects) |>
+    select(
+      Effect,
+      F_primary = `F value`,
+      p_primary = `Pr(>F)`
+    )
+
+  # Sensitivity Type III table
+  sensitivity <- car::Anova(sensitivity_model, type = 3) |>
+    as.data.frame() |>
+    rownames_to_column("Effect") |>
+    filter(Effect %in% focal_effects) |>
+    select(
+      Effect,
+      F_sensitivity = `F value`,
+      p_sensitivity = `Pr(>F)`
+    )
+
+  # Combine
+  result <- merge(
+    primary,
+    sensitivity,
+    by = "Effect"
+  )
+
+  result$Trait <- unname(trait_labels[trait])
+  result$N_primary <- nobs(model)
+  result$N_excluded <- sum(!keep)
+  result$N_sensitivity <- sum(keep)
+
+  all_results[[trait]] <- result
+}
+
+table_s7 <- do.call(
+  rbind,
+  all_results
+)
+
+row.names(table_s7) <- NULL
+
+table_s7
+
+table_s7_short <- table_s7 %>%
+  select(
+    Trait,
+    Effect,
+    N_excluded,
+    p_primary,
+    p_sensitivity
+  )
+
+table_s7_short
+
+
+```
+
+
+
+Diagnostics 
+
+
+```{r}
+
+library(DHARMa)
+library(dplyr)
+library(purrr)
+library(tibble)
+
+
+trait_labels <- c(
+  TimeinBlackThigmo_log = "Black thigmotaxis",
+  TimeinWhite_log = "Time in white (boldness)",
+  Distance_moved_log = "Distance moved (exploration)",
+  Detour_socialmotivation_log = "Detour engagement latency",
+  Detour_solve_time_imputed_log = "Detour solve latency"
+)
+
+set.seed(123)
+
+diagnostic_table <- imap_dfr(
+  model_list,
+  function(model, trait) {
+
+
+    r <- rstandard(model)
+
+
+    # DHARMa simulated residuals
+
+    sim <- simulateResiduals(
+      fittedModel = model,
+      n = 1000,
+      plot = FALSE
+    )
+
+    uniformity <- testUniformity(sim)
+    dispersion <- testDispersion(sim)
+    outliers <- testOutliers(sim)
+
+    # --------------------------------
+    # Compile results
+    # --------------------------------
+    tibble(
+      Trait = unname(trait_labels[trait]),
+
+      N = nobs(model),
+
+      DHARMa_KS_D =
+        unname(uniformity$statistic),
+
+      DHARMa_uniformity_p =
+        uniformity$p.value,
+
+      DHARMa_dispersion =
+        unname(dispersion$statistic),
+
+      DHARMa_dispersion_p =
+        dispersion$p.value,
+
+      DHARMa_outlier_p =
+        outliers$p.value,
+
+      Residuals_over_3 =
+        sum(abs(r) > 3),
+
+      Percent_over_3 =
+        100 * mean(abs(r) > 3),
+
+      Minimum_std_residual =
+        min(r),
+
+      Maximum_std_residual =
+        max(r),
+
+      Maximum_abs_std_residual =
+        max(abs(r))
+    )
+  }
+)
+
+diagnostic_table
+
+
+
+diagnostic_table_final <- diagnostic_table %>%
+  mutate(
+    Extreme_residuals = paste0(
+      Residuals_over_3,
+      " (",
+      round(Percent_over_3, 1),
+      "%)"
+    )
+  ) %>%
+  select(
+    Trait,
+    N,
+    DHARMa_uniformity_p,
+    DHARMa_dispersion,
+    DHARMa_dispersion_p,
+    DHARMa_outlier_p,
+    Extreme_residuals
+  )
+
+diagnostic_table_final
+
+diagnostic_table_final %>%
+  print(n = Inf, width = Inf)
+  
+  diagnostic_table %>%
+  select(
+    Trait,
+    Residuals_over_3,
+    Percent_over_3,
+    Minimum_std_residual,
+    Maximum_std_residual,
+    Maximum_abs_std_residual
+  ) %>%
+  print(n = Inf, width = Inf)
+
+diagnostic_table %>%
+  select(
+    Trait,
+    DHARMa_outlier_p
+  ) %>%
+  print(n = Inf, width = Inf)
+
+
+```
+
+
+
+Set of LMs #2 (for visualization only, Figures 3-4), includes 3-way interaction: Predation Regime * Watershed * Species
 ```{r}
 
 model_list2 <- setNames(vector("list", length(trait_vars)), trait_vars)
